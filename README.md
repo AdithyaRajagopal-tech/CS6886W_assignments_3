@@ -11,4 +11,4 @@ Sparsity: 0.6
 Width multiplier: 1.0
 # Execution:
 python verify_test.py \
-  --ckpt PRUNE_QAT_bw8_sp0.6_wm1.00_best.pt
+  --ckpt PRUNE_QAT_bw8_sp0.6_wm1.00_best_.pt
