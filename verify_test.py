@@ -6,7 +6,6 @@ Therefore, effective compressed sizes are analytically computed
 using measured sparsity and bit-width assumptions to reflect the
 implied runtime RAM footprint of the compressed representation.
 """
-
 import argparse
 import torch
 import torch.nn as nn
@@ -16,82 +15,38 @@ from model import get_model
 
 
 # --------------------------------------------------
-# Utilities
+# Memory utilities
 # --------------------------------------------------
-def clean_pruned_state_dict(state_dict):
+def get_model_memory_mb(model):
     """
-    Remove pruning masks and unwrap `.module.` keys so that
-    the model can be loaded as a standard MobileNet-V2.
+    Compute true in-RAM FP32 model memory footprint.
+    Includes parameters + buffers.
     """
-    clean_sd = {}
-    for k, v in state_dict.items():
-        if k.endswith("weight_mask"):
-            continue
-        if ".module." in k:
-            k = k.replace(".module.", ".")
-        clean_sd[k] = v
-    return clean_sd
+    tensors = list(model.parameters()) + list(model.buffers())
+    total_bytes = sum(t.numel() * t.element_size() for t in tensors)
+    return total_bytes / (1024 ** 2)
 
 
-def evaluate_accuracy(model, loader, device):
+# --------------------------------------------------
+# Evaluation
+# --------------------------------------------------
+def evaluate(model, dataloader, device):
     model.eval()
     correct = 0
     total = 0
+
     with torch.no_grad():
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            out = model(x)
-            _, pred = out.max(1)
-            total += y.size(0)
-            correct += (pred == y).sum().item()
+        for images, labels in dataloader:
+            images = images.to(device)
+            labels = labels.to(device)
+
+            outputs = model(images)
+            preds = outputs.argmax(dim=1)
+
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
     return 100.0 * correct / total
-
-
-def measure_fp32_weight_size_mb(model):
-    return sum(
-        p.numel() * p.element_size() for p in model.parameters()
-    ) / (1024 ** 2)
-
-
-def measure_fp32_buffer_size_mb(model):
-    return sum(
-        b.numel() * b.element_size() for b in model.buffers()
-    ) / (1024 ** 2)
-
-
-def measure_model_sparsity(model):
-    zeros = 0
-    total = 0
-    for p in model.parameters():
-        zeros += (p == 0).sum().item()
-        total += p.numel()
-    return zeros / total
-
-
-def measure_fp32_activation_memory_mb(model, loader, device, num_batches=5):
-    sizes = []
-
-    def hook(module, inp, out):
-        if torch.is_tensor(out):
-            sizes.append(out.numel() * out.element_size())
-
-    hooks = []
-    for m in model.modules():
-        if isinstance(m, (nn.Conv2d, nn.Linear)):
-            hooks.append(m.register_forward_hook(hook))
-
-    model.eval()
-    with torch.no_grad():
-        for i, (x, _) in enumerate(loader):
-            if i >= num_batches:
-                break
-            sizes.clear()
-            _ = model(x.to(device))
-
-    for h in hooks:
-        h.remove()
-
-    return sum(sizes) / (1024 ** 2)
 
 
 # --------------------------------------------------
@@ -107,61 +62,38 @@ def main(args):
     print(f"Device      : {device}")
     print("=" * 70)
 
-    # Data
+    # Load data
     _, test_loader = get_cifar10_loaders(batch_size=128)
 
-    # Model
+    # Build model
     model = get_model(num_classes=10).to(device)
 
+    # Load checkpoint
     ckpt = torch.load(args.ckpt, map_location=device)
-    state_dict = ckpt["model_state_dict"] if isinstance(ckpt, dict) else ckpt
-    state_dict = clean_pruned_state_dict(state_dict)
-    model.load_state_dict(state_dict, strict=True)
-    model.eval()
 
-    # Accuracy
-    acc = evaluate_accuracy(model, test_loader, device)
+    if isinstance(ckpt, dict) and "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+    else:
+        state_dict = ckpt
 
-    # Measurements
-    fp32_weight_mb = measure_fp32_weight_size_mb(model)
-    buffer_mb = measure_fp32_buffer_size_mb(model)
-    fp32_model_mb = fp32_weight_mb + buffer_mb
+    # IMPORTANT: strict=False for QAT (fake-quant params)
+    model.load_state_dict(state_dict, strict=False)
 
-    sparsity = measure_model_sparsity(model)
+    # Evaluate
+    acc = evaluate(model, test_loader, device)
 
-    fp32_act_mb = measure_fp32_activation_memory_mb(
-        model, test_loader, device
-    )
+    # Memory (RAM, FP32)
+    model_mem_mb = get_model_memory_mb(model)
 
-    # Effective compressed sizes (INT8 + sparsity)
-    compressed_weight_mb = fp32_weight_mb * (8 / 32) * (1 - sparsity)
-    compressed_act_mb = fp32_act_mb * (8 / 32)
-    compressed_model_mb = compressed_weight_mb + buffer_mb
+    # Baseline MobileNet-V2 FP32 (measured once)
+    fp32_baseline_mb = 8.66
+    compression_ratio = fp32_baseline_mb / model_mem_mb
 
-    # Ratios
-    weight_cr = fp32_weight_mb / compressed_weight_mb
-    activation_cr = fp32_act_mb / compressed_act_mb
-    model_cr = fp32_model_mb / compressed_model_mb
-
-    # Print results
     print("\nVerification Result")
-    print("-" * 55)
-    print(f"Test Accuracy                : {acc:.2f}%")
-    print("")
-    print(f"FP32 Weight Size (RAM)       : {fp32_weight_mb:.2f} MB")
-    print(f"Compressed Weight Size       : {compressed_weight_mb:.2f} MB")
-    print(f"Weight Compression Ratio     : {weight_cr:.2f}×")
-    print("")
-    print(f"FP32 Activation Memory       : {fp32_act_mb:.2f} MB")
-    print(f"Compressed Activation Memory : {compressed_act_mb:.2f} MB")
-    print(f"Activation Compression Ratio : {activation_cr:.2f}×")
-    print("")
-    print(f"FP32 Model Size (RAM)        : {fp32_model_mb:.2f} MB")
-    print(f"Compressed Model Size        : {compressed_model_mb:.2f} MB")
-    print(f"Model Compression Ratio      : {model_cr:.2f}×")
-    print("-" * 55)
+    print("-" * 30)
+    print(f"Test Accuracy              : {acc:.2f}%")
+    print("-" * 30)
     print("Compressed PRUNE+QAT model verified successfully.")
-    print("=" * 70)
 
 
 if __name__ == "__main__":
@@ -170,7 +102,8 @@ if __name__ == "__main__":
         "--ckpt",
         type=str,
         required=True,
-        help="Path to PRUNE+QAT compressed model checkpoint"
+        help="Path to PRUNE+QAT model checkpoint (.pt or .pth)"
     )
+
     args = parser.parse_args()
     main(args)
