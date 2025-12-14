@@ -1,0 +1,34 @@
+project: Assign_3_cifar10-compression
+name: compression-sweep-gpu-fp16
+program: run_compression_experiments.py
+method: grid
+metric:
+  name: test_accuracy
+  goal: maximize
+parameters:
+  config:
+    values:
+      - FP16
+      - PRUNING
+      - WIDTH_MULTIPLIER
+      - HYBRID
+      - FP16
+      - PRUNING
+      - WIDTH_MULTIPLIER
+      - HYBRID
+  bit-width:
+    values: [16, 8, 8, 8, 16, 8, 8, 8]
+  sparsity:
+    values: [0, 0.3, 0, 0.3, 0, 0.2, 0, 0.25]
+  width-mult:
+    values: [1.0, 1.0, 0.75, 0.75, 1.0, 1.0, 0.5, 0.5]
+  exceptions:
+    values:
+      - "features.0"
+      - "features.0,classifier"
+      - "features.0"
+      - "features.0"
+      - "features.0"
+      - "features.0,classifier"
+      - "features.0"
+      - "features.0"

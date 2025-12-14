@@ -1,0 +1,28 @@
+project: Assign_3_cifar10-compression
+name: compression-sweep-cpu-quantized
+program: run_compression_experiments.py
+method: grid
+metric:
+  name: test_accuracy
+  goal: maximize
+parameters:
+  config:
+    values:
+      - INT8_STATIC
+      - INT8_DYNAMIC
+      - INT4
+      - INT8_DYNAMIC
+  bit-width:
+    values: [8, 8, 4, 8]
+  static:
+    values: [true, false, false, false]
+  sparsity:
+    values: [0, 0, 0, 0]
+  width-mult:
+    values: [0, 0, 0, 0]
+  exceptions:
+    values:
+      - "features.0,features.1"
+      - "features.0"
+      - "features.0"
+      - "classifier"
