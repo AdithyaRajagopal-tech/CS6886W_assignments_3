@@ -12,6 +12,7 @@ import os
 import sys
 import torch
 import wandb
+from trainer import train_and_evaluate
 
 from dataloader import get_cifar10_loaders
 
@@ -20,6 +21,11 @@ try:
     from compression_config import CONFIGS as PROJECT_CONFIGS
 except Exception:
     PROJECT_CONFIGS = {}
+def get_device(requested):
+    import torch
+    if requested == "cpu":
+        return torch.device("cpu")
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Canonical configs (extend/modify as needed).
 # Each config entry defines tasks to perform. CLI overrides will replace values when provided.
